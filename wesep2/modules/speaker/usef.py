@@ -1,3 +1,8 @@
+# Reference:
+#   Z. Bang et al., "USEF-TSE: Universal Speaker Embedding Free Target Speaker Extraction"
+# Based on the implementation from:
+#   https://github.com/ZBang/USEF-TSE
+
 import math
 
 import torch
