@@ -16,17 +16,9 @@ from scipy import signal
 
 from wesep.dataset.FRAM_RIR import single_channel as RIR_sim
 from wesep.dataset.lmdb_data import LmdbData
+from wesep.dataset.timeline import sample_num_speakers, timeline_generator, parse_timeline, parse_overlap_ratio
 
 AUDIO_FORMAT_SETS = {"flac", "mp3", "m4a", "ogg", "opus", "wav", "wma"}
-
-# set the simulation configuration
-simu_config = {
-    "min_max_room": [[3, 3, 2.5], [10, 6, 4]],
-    "rt60": [0.1, 0.7],
-    "sr": 16000,
-    "mic_dist": [0.2, 5.0],
-    "num_src": 1,
-}
 
 
 def url_opener(data):
@@ -207,30 +199,53 @@ def parse_raw_single_spk(data):
             logging.warning("Failed to read {}".format(wav_file))
 
 
-def mix_speakers(data, num_speaker=2, shuffle_size=1000):
-    """Dynamic mixing speakers when loading data,
+def sample_speaker_group(data,
+                         num_speakers=None,
+                         shuffle_size=1000,
+                         timeline_conf=None,
+                         rng=random):
+    """Sample and pack speakers into group when loading data,
     shuffle is not needed if this function is used
     Args:
         :param data: Iterable[{key, wavs, spks}]
         :param num_speaker:
-        :param use_random_snr:
         :param shuffle_size:
+        :param timeline:
     Returns:
-        Iterable[{key, wav_mix, wav_spk1, wav_spk2, ..., spk1, spk2, ...}]
+        Iterable[{key, spk1, wav_spk1, timeline_spk1, spk2, ..., num_speaker, overlap_ratio_2spk, sample_rate}]
     """
+    assert num_speakers is not None
+
     buf = []
     for sample in data:
         buf.append(sample)
         if len(buf) >= shuffle_size:
             random.shuffle(buf)
             for x in buf:
+                num_speaker = sample_num_speakers(num_speakers, rng)
+                if timeline_conf is not None:
+                    timeline, overlap_ratio = timeline_generator(
+                        timeline_conf, num_speaker, rng)
+                else:
+                    timeline = [{
+                        "speaker": i,
+                        "start": 0.0,
+                        "end": 1.0
+                    } for i in range(num_speaker)]
+                    overlap_ratio = {"overlap_ratio": 1.0}
+
                 cur_spk = x["spk"]
                 example = {
                     "key": x["key"],
                     "wav_spk1": x["wav"],
                     "spk1": x["spk"],
                     "sample_rate": x["sample_rate"],
+                    "num_speaker": num_speaker,
+                    "overlap_ratio_2spk": parse_overlap_ratio(overlap_ratio),
                 }
+                # attach timeline for spk1
+                example["timeline_spk1"] = parse_timeline(
+                    [t for t in timeline if t["speaker"] == 0])
                 key = "mix_" + x["key"]
                 interference_idx = 1
                 while interference_idx < num_speaker:
@@ -239,26 +254,51 @@ def mix_speakers(data, num_speaker=2, shuffle_size=1000):
                         interference = random.choice(buf)
                     key = key + "_" + interference["key"]
                     interference_idx += 1
+                    # attach timeline for this slot
+                    example["timeline_spk" +
+                            str(interference_idx)] = parse_timeline([
+                                t for t in timeline
+                                if t["speaker"] == (interference_idx - 1)
+                            ])
                     example["wav_spk" +
                             str(interference_idx)] = interference["wav"]
                     example["spk" +
                             str(interference_idx)] = interference["spk"]
                 example["key"] = key
-                example["num_speaker"] = num_speaker
                 yield example
 
             buf = []
 
     # The samples left over
     random.shuffle(buf)
+    unique_spk = list({s["spk"] for s in buf})
+    K = len(unique_spk)
     for x in buf:
+        num_speaker = sample_num_speakers(num_speakers, rng)
+        num_speaker = min(num_speaker, K)
+        if timeline_conf is not None:
+            timeline, overlap_ratio = timeline_generator(
+                timeline_conf, num_speaker, rng)
+        else:
+            timeline = [{
+                "speaker": i,
+                "start": 0.0,
+                "end": 1.0
+            } for i in range(num_speaker)]
+            overlap_ratio = {"overlap_ratio": 1.0}
+
         cur_spk = x["spk"]
         example = {
             "key": x["key"],
             "wav_spk1": x["wav"],
             "spk1": x["spk"],
             "sample_rate": x["sample_rate"],
+            "num_speaker": num_speaker,
+            "overlap_ratio_2spk": parse_overlap_ratio(overlap_ratio),
         }
+        # attach timeline for spk1
+        example["timeline_spk1"] = parse_timeline(
+            [t for t in timeline if t["speaker"] == 0])
         key = "mix_" + x["key"]
         interference_idx = 1
         while interference_idx < num_speaker:
@@ -267,56 +307,124 @@ def mix_speakers(data, num_speaker=2, shuffle_size=1000):
                 interference = random.choice(buf)
             key = key + "_" + interference["key"]
             interference_idx += 1
+            # attach timeline for this slot
+            example["timeline_spk" + str(interference_idx)] = parse_timeline([
+                t for t in timeline if t["speaker"] == (interference_idx - 1)
+            ])
             example["wav_spk" + str(interference_idx)] = interference["wav"]
             example["spk" + str(interference_idx)] = interference["spk"]
         example["key"] = key
-        example["num_speaker"] = num_speaker
         yield example
 
 
-def snr_mixer(data, use_random_snr: bool = False):
-    """Dynamic mixing speakers when loading data, shuffle is not needed if this function is used.  # noqa
+def apply_timeline(data):
+    """
+    Apply timeline masks to each speaker waveform in example.
+
+    Args:
+        data: Iterable[example], where example contains:
+              wav_spk{i}: Tensor [1, T]
+              timeline_spk{i}: list of [start, end] in [0,1]
+              num_speaker: int
+
+    Yields:
+        example with wav_spk{i} masked by timeline
+    """
+    for sample in data:
+        K = sample["num_speaker"]
+
+        for i in range(1, K + 1):
+            wav_key = f"wav_spk{i}"
+            tl_key = f"timeline_spk{i}"
+
+            wav = sample[wav_key]  # [1, T]
+            timeline = sample[tl_key]  # list of [s, e]
+
+            assert wav.dim() == 2 and wav.size(0) == 1, \
+                f"{wav_key} must be [1, T]"
+
+            T = wav.size(1)
+            device = wav.device
+
+            # build mask
+            mask = torch.zeros(T, device=device)
+
+            for seg in timeline:
+                s, e = seg
+                # clamp just in case
+                s = max(0.0, min(1.0, float(s)))
+                e = max(0.0, min(1.0, float(e)))
+                if e <= s:
+                    continue
+
+                start = int(round(s * T))
+                end = int(round(e * T))
+                start = max(0, min(T, start))
+                end = max(0, min(T, end))
+
+                if end > start:
+                    mask[start:end] = 1.0
+
+            # apply
+            wav = wav * mask.unsqueeze(0)  # [1, T]
+            sample[wav_key] = wav
+        yield sample
+
+
+def snr_mixer(data, snr_conf=None, rng=random):
+    """Dynamic mixing speakers when loading data, shuffle is not needed if this function is used.
 
     Args:
         data: Iterable[{key, wav_spk1, wav_spk2, ..., spk1, spk2, ...}]
-        use_random_snr (bool, optional): Whether use random SNR to mix speeches. Defaults to False.  # noqa
+        snr_conf:
+            range: range of target-to-interference ratio in dB (after reverb)
+            gain: adjust the overall energy of mix, spk1, spk2.
 
     Returns:
         Iterable[{key, wav_mix, wav_spk1, wav_spk2, ..., spk1, spk2, ...}]
     """
     for sample in data:
         assert "num_speaker" in sample.keys()
+        if snr_conf is None:
+            snr_conf = {
+                "range": [-5, 10],
+                "gain": [-12, 0],
+            }
         if "wav_spk1_reverb" in sample.keys():
-            suffix = "_reverb"
+            suffix = "_reverb"  # Reserved when maintian the dry wav
         else:
             suffix = ""
         num_speaker = sample["num_speaker"]
         wavs_to_mix = [sample["wav_spk1" + suffix]]
         target_energy = torch.sum(wavs_to_mix[0]**2, dim=-1, keepdim=True)
         for i in range(1, num_speaker):
+            snr = rng.uniform(*snr_conf["range"])
             interference = sample[f"wav_spk{i + 1}" + suffix]
-            if use_random_snr:
-                snr = random.uniform(-10, 10)
-            else:
-                snr = 0
             energy = torch.sum(interference**2, dim=-1, keepdim=True)
-            interference *= torch.sqrt(target_energy / energy) * 10**(snr / 20)
+            interference *= torch.sqrt(
+                target_energy / energy) * 10**(-snr / 20)
             wavs_to_mix.append(interference)
         wavs_to_mix = torch.stack(wavs_to_mix)
         sample["wav_mix"] = torch.sum(wavs_to_mix, 0)
+        # ---------- Peak normalization ----------
         max_amp = max(
             torch.abs(sample["wav_mix"]).max().item(),
             *[x.item() for x in torch.abs(wavs_to_mix).max(dim=-1)[0]],
         )
-        if max_amp != 0:
-            mix_scaling = 1 / max_amp
+        if max_amp > 0:
+            peak_scale = 1.0 / max_amp
         else:
-            mix_scaling = 1
-
-        sample["wav_mix"] = sample["wav_mix"] * mix_scaling
-        for i in range(0, num_speaker):
-            sample[f"wav_spk{i + 1}" + suffix] *= mix_scaling
-
+            peak_scale = 1.0
+        sample["wav_mix"] *= peak_scale
+        for i in range(num_speaker):
+            sample[f"wav_spk{i + 1}{suffix}"] *= peak_scale
+        # ---------- Random global gain (after peak norm) ----------
+        if snr_conf.get("gain", None) is not None:
+            gain_db = rng.uniform(*snr_conf["gain"])  # e.g. [-12, 0]
+            gain = 10**(gain_db / 20)
+            sample["wav_mix"] *= gain
+            for i in range(num_speaker):
+                sample[f"wav_spk{i + 1}{suffix}"] *= gain
         yield sample
 
 
@@ -743,7 +851,7 @@ def add_noise(
         yield sample
 
 
-def add_reverb(data, reverb_prob=0):
+def add_reverb(data, reverb_prob=0, reverb_conf=None, rng=random):
     """
     Args:
         data: Iterable[{key, wav_spk1, wav_spk2, ..., spk1, spk2, ...}]
@@ -756,29 +864,42 @@ def add_reverb(data, reverb_prob=0):
     https://arxiv.org/pdf/2304.08052
         This function is only used when online_mixing.
     """
+    if reverb_prob == 0:
+        yield from data
+        return
+
+    if reverb_conf is None:
+        # set the default simulation configuration
+        reverb_conf = {
+            "min_max_room": [[3, 3, 2.5], [10, 6, 4]],
+            "rt60": [0.1, 0.7],
+            "mic_dist": [0.2, 5.0],
+        }
+
     for sample in data:
+        apply = rng.random() < reverb_prob
+        if not apply:
+            yield sample
+            continue
+
         assert "num_speaker" in sample.keys()
         assert "sample_rate" in sample.keys()
-        simu_config["num_src"] = sample["num_speaker"]
-        simu_config["sr"] = sample["sample_rate"]
-        rirs, _ = RIR_sim(simu_config)  # [n_mic, nsource, nsamples]
-        rirs = rirs[0]  # [nsource, nsamples]
 
+        reverb_conf["num_src"] = sample["num_speaker"]
+        reverb_conf["sr"] = sample["sample_rate"]
+
+        rirs, _ = RIR_sim(reverb_conf)
+        rirs = rirs[0]  # [num_speaker, rir_len]
+
+        # Apply room impulse response to each speaker signal.
+        # This simulates the acoustic propagation from speaker to microphone.
+        # The reverberant signals are used as ground truth for separation.
         for i in range(sample["num_speaker"]):
-            if reverb_prob > random.random():
-                # [1, audio_len], currently only support single-channel audio
-                audio = sample[f"wav_spk{i + 1}"].numpy()
-                rir = rirs[i:i + 1, :]  # [1, nsamples]
-                rir_audio = signal.convolve(
-                    audio, rir,
-                    mode="full")[:, :audio.shape[1]]  # [1, audio_len]
+            audio = sample[f"wav_spk{i+1}"].numpy()
+            rir = rirs[i:i + 1]
+            out = signal.convolve(audio, rir, mode="full")[:, :audio.shape[1]]
+            sample[f"wav_spk{i+1}"] = torch.from_numpy(out)
 
-                max_scale = np.max(np.abs(rir_audio))
-                out_audio = rir_audio / max_scale * 0.9
-                # Note: Here, we do not replace the dry audio with the reverberant audio,  # noqa
-                # which means we hope the model to perform dereverberation and
-                # TSE simultaneously.
-                sample[f"wav_spk{i + 1}"] = torch.from_numpy(out_audio)
         yield sample
 
 

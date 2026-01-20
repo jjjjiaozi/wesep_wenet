@@ -21,6 +21,8 @@ import lmdb
 class LmdbData:
 
     def __init__(self, lmdb_file):
+        assert isinstance(lmdb_file, (str, bytes)), \
+            f"lmdb_file must be str or bytes, got {type(lmdb_file)}"
         self.db = lmdb.open(lmdb_file,
                             readonly=True,
                             lock=False,

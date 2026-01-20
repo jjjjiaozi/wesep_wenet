@@ -159,35 +159,31 @@ def train(config="conf/config.yaml", **kwargs):
         dict_spk=dict_spk,
         whole_utt=configs.get("whole_utt", False),
         repeat_dataset=configs.get("repeat_dataset", True),
-        noise_prob=configs["dataset_args"].get("noise_prob", 0),
-        reverb_prob=configs["dataset_args"].get("reverb_prob", 0),
         noise_enroll_prob=configs["dataset_args"].get("noise_enroll_prob", 0),
         reverb_enroll_prob=configs["dataset_args"].get("reverb_enroll_prob",
                                                        0),
         specaug_enroll_prob=configs["dataset_args"].get(
             "specaug_enroll_prob", 0),
         online_mix=configs["dataset_args"].get("online_mix", False),
-        noise_lmdb_file=configs["dataset_args"].get("noise_lmdb_file", None),
     )
-    val_dataset = Dataset(configs["data_type"],
-                          configs["val_data"],
-                          configs["dataset_args"],
-                          val_spk2embed_dict,
-                          val_spk1_embed,
-                          val_spk2_embed,
-                          state="val",
-                          joint_training=joint_training,
-                          whole_utt=configs.get("whole_utt", False),
-                          repeat_dataset=True,
-                          online_mix=False,
-                          noise_prob=0,
-                          reverb_prob=0,
-                          noise_enroll_prob=0,
-                          reverb_enroll_prob=0,
-                          specaug_enroll_prob=0)
-    train_dataloader = DataLoader(train_dataset,
-                                  **configs["dataloader_args"],
-                                  collate_fn=tse_collate_fn)
+    val_dataset = Dataset(
+        configs["data_type"],
+        configs["val_data"],
+        configs["dataset_args"],
+        val_spk2embed_dict,
+        val_spk1_embed,
+        val_spk2_embed,
+        state="val",
+        joint_training=joint_training,
+        whole_utt=configs.get("whole_utt", False),
+        repeat_dataset=True,
+        online_mix=False,
+    )
+    train_dataloader = DataLoader(
+        train_dataset,
+        **configs["dataloader_args"],
+        collate_fn=tse_collate_fn,
+    )
     val_dataloader = DataLoader(
         val_dataset,
         **configs["dataloader_args"],

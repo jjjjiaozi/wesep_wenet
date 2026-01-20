@@ -136,7 +136,7 @@ if [ ${stage} -le 6 ] && [ ${stop_stage} -ge 6 ]; then
 
   echo "Prepare wav.scp for musan ..."
   mkdir -p ${data}/musan
-  find ${data}/raw_data/musan -name "*.wav" | awk -F"/" '{print $(NF-2)"/"$(NF-1)"/"$NF,$0}' >${data}/musan/wav.scp
+  find -L ${data}/raw_data/musan -name "*.wav" | awk -F"/" '{print $(NF-2)"/"$(NF-1)"/"$NF,$0}' >${data}/musan/wav.scp
 
   # Convert all musan data to LMDB
   echo "conver musan data to LMDB ..."

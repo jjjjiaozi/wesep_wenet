@@ -21,7 +21,7 @@ num_avg=10
 checkpoint=
 config=confs/bsrnn_online.yaml
 exp_dir=exp/BSRNN_Online/no_spk_transform_multiply
-save_results=true
+save_results=False
 
 
 . tools/parse_options.sh || exit 1
@@ -34,7 +34,7 @@ if [ ${stage} -le 1 ] && [ ${stop_stage} -ge 1 ]; then
     --data ${data} \
     --noise_type ${noise_type} \
     --stage 1 \
-    --stop-stage 4
+    --stop-stage 6
 fi
 
 data=${data}/${noise_type}

@@ -17,18 +17,39 @@ dataset_args:
       max_num_seconds: 100.0
   chunk_len: 48000
   online_mix: true
-  num_speakers: 2
-  use_random_snr: true
+  num_speakers:
+    distribution: [0.1, 0.7, 0.2] # 3rd means 3+
+    max_speakers: 4
+  timeline:
+    two_speaker:
+      overlap_ratio: [0.5, 1.0]
+      overlap_position:
+        head: 0.3
+        middle: 0.4
+        tail: 0.3
+      middle_mode:
+        crossing: 0.6
+        containment: 0.4
+    extra_speaker_activity: [0.1, 0.8]
+    silence:
+      allow: False  # Add silence seg to the head/tail
+      head_tail_ratio: [0.0, 0.1]
+  mix_snr:
+    range: [-5, 10] # signal-to-interference ratio in dB
+    gain: [-12, 0]
+  noise_prob: 0.5
+  noise_lmdb_file:  './data/musan/lmdb'
+  reverb_prob: 0.5
+  reverb_conf:
+    min_max_room: [[3, 3, 2.5], [8, 6, 4]]
+    rt60: [0.1, 0.6]
+    mic_dist: [0.2, 4.0]
   speaker_feat: &speaker_feat False
   fbank_args:
     num_mel_bins: 80
     frame_shift: 10
     frame_length: 25
     dither: 1.0
-
-  noise_lmdb_file:  './data/musan/lmdb'
-  noise_prob: 0
-  reverb_prob: 0
 
 enable_amp: false
 exp_dir: exp/BSRNN

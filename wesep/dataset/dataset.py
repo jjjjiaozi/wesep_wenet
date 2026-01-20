@@ -276,12 +276,9 @@ def Dataset(
     dict_spk=None,
     whole_utt=False,
     repeat_dataset=False,
-    noise_prob=0,
-    reverb_prob=0,
     noise_enroll_prob=0,
     reverb_enroll_prob=0,
     specaug_enroll_prob=0,
-    noise_lmdb_file=None,
     online_mix=False,
 ):
     """Construct dataset from arguments
@@ -296,12 +293,9 @@ def Dataset(
         :param data_type(str): shard/raw/feat
         :param data_list_file: data list file
         :param configs: dataset configs
-        :param noise_prob:probility to add noise on mixture
-        :param reverb_prob:probility to add reverb on mixture
         :param noise_enroll_prob:probility to add noise on enrollment speech
         :param reverb_enroll_prob:probility to add reverb on enrollment speech
         :param specaug_enroll_prob: probility to apply SpecAug on fbank of enrollment speech  # noqa
-        :param noise_lmdb_file: noise data source lmdb file
         :param whole_utt: use whole utt or random chunk
         :param repeat_dataset:
     """
@@ -333,29 +327,36 @@ def Dataset(
     resample_rate = configs.get("resample_rate", 16000)
     dataset = Processor(dataset, processor.resample, resample_rate)
 
+    timeline_conf = configs.get("timeline", None)
     if not whole_utt:
         # random chunk
         chunk_len = configs.get("chunk_len", resample_rate * 3)
         dataset = Processor(dataset, processor.random_chunk, chunk_len)
+    else:
+        timeline_conf = None  # whole_utt=True, timeline will be ignored.
 
-    if online_mix:
-        dataset = Processor(
-            dataset,
-            processor.mix_speakers,
-            configs.get("num_speakers", 2),
-            configs.get("online_buffer_size", 1000),
-        )
-        if reverb_prob > 0:
-            dataset = Processor(dataset, processor.add_reverb, reverb_prob)
-        dataset = Processor(
-            dataset,
-            processor.snr_mixer,
-            configs.get("use_random_snr", False),
-        )
-    if noise_prob > 0:
-        assert noise_lmdb_file is not None
-        dataset = Processor(dataset, processor.add_noise, noise_lmdb_file,
-                            noise_prob)
+    if state == "train":
+        if online_mix:
+            dataset = Processor(
+                dataset,
+                processor.sample_speaker_group,
+                configs.get("num_speakers", None),
+                configs.get("online_buffer_size", 1000),
+                timeline_conf,
+            )
+            dataset = Processor(dataset, processor.apply_timeline)
+            dataset = Processor(dataset, processor.add_reverb,
+                                configs.get("reverb_prob", 0),
+                                configs.get("reverb_conf", None))
+            dataset = Processor(dataset, processor.snr_mixer,
+                                configs.get("snr_conf", None))
+
+        if configs.get("noise_prob", 0) > 0:
+            assert configs.get("noise_lmdb_file", None) is not None
+            dataset = Processor(dataset, processor.add_noise,
+                                configs.get("noise_lmdb_file", None),
+                                configs.get("noise_prob", 0))
+
     speaker_feat = configs.get("speaker_feat", False)
     if state == "train":
         if not joint_training:
