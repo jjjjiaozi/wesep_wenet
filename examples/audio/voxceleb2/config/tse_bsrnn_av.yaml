@@ -1,0 +1,163 @@
+# tse_bsrnn_av.yaml
+# AV-TSE (BSRNN backbone) config for your current visual-only pipeline
+train_data: /mnt/afs/wwu/vox2_mp4/preprocess/mixture_data_list_2mix.csv
+val_data:   /mnt/afs/wwu/vox2_mp4/preprocess/mixture_data_list_2mix.csv
+
+dataloader_args:
+  batch_size: 12          # 对齐你 usev 脚本里的 batch_size；注意 2spk collate 会把 batch 展开成 2倍
+  drop_last: true
+  num_workers: 6
+  pin_memory: true
+  prefetch_factor: 6
+
+dataset_args:
+  # ---- required by av_dataset.py / DatasetUtilsAV ----
+  resample_rate: &sr 16000
+  fps: 25
+  num_speakers: 2
+
+  # 你的数据路径（来自你 usev 脚本）
+  audio_direc:  /mnt/afs/wwu/vox2_mp4/preprocess/audio_clean/
+  visual_direc: /mnt/afs/wwu/vox2_mp4/preprocess/lip/
+  mixture_direc: /mnt/afs/wwu/vox2_mp4/preprocess/audio_mixture/2_mix_min_800/
+
+  # csv 第 0 列是 partition：train/val/test
+  partition: train
+  val_partition: val
+
+  # 训练策略
+  shuffle: true
+  sample_num_per_epoch: 0     # 0 表示按 train_visual.py 的默认逻辑走（len(tr_lines)//2）
+
+  # 读 wav/npy 后裁剪（秒）；不想裁剪就设 null
+  max_length: 6.0             # 你 CSV 最后一列看起来就是时长；这里用统一裁剪更稳
+  normalize_audio: false      # 需要和你后续音频前处理一致；想跟 utils 一样做 max-abs 归一化可改 true
+
+  # ---- cue mode：核心开关 ----
+  # visual: 只用视觉线索（spk_embeds=None）
+  # enroll: 只用音频 enroll（visual_feat=None）
+  # both:  同时使用
+  cue_mode: visual
+
+  # ---- 以下这些字段是 executor_av.py 里会读的（保持 0 即可） ----
+  speaker_feat: &speaker_feat false
+  fbank_args:
+    num_mel_bins: 80
+    frame_shift: 10
+    frame_length: 25
+    dither: 1.0
+
+  noise_lmdb_file: './data/musan/lmdb'
+  noise_prob: 0
+  specaug_enroll_prob: 0
+  reverb_enroll_prob: 0
+  noise_enroll_prob: 0
+  SSA_enroll_prob: 0
+
+enable_amp: true
+exp_dir: exp/BSRNN_AV
+gpus: '0'
+log_batch_interval: 100
+
+loss: SISDR
+loss_args: {}
+
+model:
+  # 你的 get_model() 会根据 "TSE_BSRNN_VISUAL" 前缀路由到 tse_bsrnn_visual.py
+  tse_model: TSE_BSRNN_VISUAL
+
+model_args:
+  tse_model:
+    joint_training: true
+    multi_task: false
+
+    separator:
+      sr: *sr
+      win: 512
+      stride: 128
+      feature_dim: 128
+      num_repeat: 6
+      causal: false
+      nspk: 1
+
+    # ===== Speaker features =====
+    # 重要：visual-only 时 listen/usef/tfmap 必须禁用，否则 enroll=None 会报错
+    speaker:
+      features:
+        listen:
+          enabled: false
+        usef:
+          enabled: false
+        tfmap:
+          enabled: false
+
+        # visual-only 不需要 enroll，所以这两个也默认关
+        context:
+          enabled: false
+        spkemb:
+          enabled: false
+
+      # speaker_model 留着不影响（以后你想 cue_mode=both 再打开 speaker features 用得上）
+      speaker_model:
+        fbank:
+          num_mel_bins: 80
+          frame_shift: 10
+          frame_length: 25
+          dither: 1.0
+          sample_rate: *sr
+        speaker_encoder:
+          model: ECAPA_TDNN_GLOB_c512
+          pretrained: ./wespeaker_models/voxceleb_ECAPA512/avg_model.pt
+          spk_args:
+            embed_dim: 192
+            feat_dim: 80
+            pooling_func: "ASTP"
+
+    # ===== Visual frontend =====
+    # 你 tse_bsrnn_visual.py 里会用 VisualFrontend(config=visual_cfg, feature_dim, nband)
+    visual:
+      features:
+        viscontext:
+          enabled: true
+          dv: 512
+          cv: 256
+          pretrained: null
+          freeze: false
+          input_is_precomputed: true
+          precomputed_dim: 512
+
+model_init:
+  tse_model: null
+  discriminator: null
+  spk_model: null
+
+num_avg: 10
+num_epochs: 200
+
+optimizer:
+  tse_model: Adam
+optimizer_args:
+  tse_model:
+    lr: 0.001
+    weight_decay: 0.0001
+
+clip_grad: 5.0
+save_epoch_interval: 1
+
+scheduler:
+  tse_model: ExponentialDecrease
+scheduler_args:
+  tse_model:
+    final_lr: 2.5e-05
+    initial_lr: 0.001
+    warm_from_zero: false
+    warm_up_epoch: 0
+
+seed: 42
+
+
+# ===== train_visual.py 仍然会读取的路径项（请按你 wesep 工程实际文件填写）=====
+# 这些文件主要用于统计 val_iter / epoch_iter 等；即使 visual-only 也会被读取
+train_data: /mnt/afs/wwu/vox2_mp4/preprocess/mixture_data_list_2mix.csv
+val_data:   /mnt/afs/wwu/vox2_mp4/preprocess/mixture_data_list_2mix.csv
+
